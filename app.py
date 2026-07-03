@@ -76,7 +76,7 @@ else:
         with col5:
             category = st.selectbox("Category", ["(none)", "walk", "feeding", "meds", "grooming"])
         with col6:
-            recurrence = st.selectbox("Recurrence", ["daily", "none"])
+            recurrence = st.selectbox("Recurrence", ["none", "daily", "weekly"])
         with col7:
             t = st.time_input("Preferred time (optional)", value=None)
             preferred_time = (t.hour * 60 + t.minute) if t else None

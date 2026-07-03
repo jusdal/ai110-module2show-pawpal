@@ -36,8 +36,13 @@ A review of the skeleton (before writing any logic) surfaced several refinements
 
 **a. Constraints and priorities**
 
-- What constraints does your scheduler consider (for example: time, priority, preferences)?
-- How did you decide which constraints mattered most?
+The scheduler considers three main constraints:
+
+1. **Time window** — the owner's `day_start` and `day_end` bound the available day. Tasks that can't fit within that window are dropped rather than placed outside it.
+2. **Priority** — higher-priority tasks are placed first. When two tasks want the same time slot, the higher-priority one wins and the loser is re-queued for gap-fill.
+3. **Preferred time** — tasks with a `preferred_time` are anchored to that slot when possible. This respects real-world constraints like medication schedules or feeding routines that can't simply be moved to "whenever."
+
+Priority matters most because it's the main lever the user has to express what's non-negotiable. Preferred time comes second — it's a strong preference but can be bumped. Time window is the hard outer bound: there's no point scheduling tasks the owner genuinely can't reach.
 
 **b. Tradeoffs**
 
@@ -53,13 +58,20 @@ This tradeoff is reasonable for a daily pet care planner for three reasons. Firs
 
 **a. How you used AI**
 
-- How did you use AI tools during this project (for example: design brainstorming, debugging, refactoring)?
-- What kinds of prompts or questions were most helpful?
+I used Claude Code as a collaborative pair throughout the project. The main uses were:
+
+- **Design review before coding.** After writing the class skeleton from my UML, I asked the AI to review it for design issues before adding any logic. That review surfaced several concrete refinements — making `generate()` idempotent, extracting `_first_free_gap()` as a shared helper, and changing `_resolve_clash()` to return both winner and loser — all while the code was still cheap to change.
+- **Implementing scheduling logic.** Once the skeleton was hardened, I worked with the AI to implement each method in `Schedule`: `_place_anchored()`, `_fill_gaps()`, `explain()`, and `detect_conflicts()`. Having the design clear up front meant those implementations came out clean on the first pass.
+- **Adding tests.** I asked the AI to help identify edge cases I hadn't thought of — things like the back-reference healing in `_collect_tasks()`, unknown recurrence strings, and the `filter_tasks()` combined-filter cases.
+- **Building the Streamlit UI.** I used the AI to wire the `Owner` / `Pet` / `Schedule` domain model into session state and build the schedule display, conflict warnings, and task management forms.
+
+The most useful prompts were specific and structural: "review this skeleton and list design issues before I add logic," rather than open-ended requests. Asking the AI to explain its reasoning also helped me evaluate suggestions rather than just accept them.
 
 **b. Judgment and verification**
 
-- Describe one moment where you did not accept an AI suggestion as-is.
-- How did you evaluate or verify what the AI suggested?
+When implementing `_fill_gaps()`, the AI suggested an approach that would leave natural buffer time between tasks — rather than packing each task into the very first available slot, it proposed spacing them with small gaps to give the day a more realistic feel for a pet care schedule. The idea made sense from a UX perspective, but implementing it correctly would have required tracking a separate "preferred gap size," threading that through `_first_free_gap()`, and deciding what to do when gaps weren't available. That's a significant change to the core placement logic, and the additional complexity wasn't justified for this version. I kept the simpler greedy packing and noted buffer time as a future improvement instead.
+
+I verified the AI's implementations by reading through the logic manually and then running the test suite. For the scheduling methods specifically, I traced through a concrete two-pet, three-task example by hand before trusting the output.
 
 ---
 
@@ -67,13 +79,27 @@ This tradeoff is reasonable for a daily pet care planner for three reasons. Firs
 
 **a. What you tested**
 
-- What behaviors did you test?
-- Why were these tests important?
+The test suite covers several behavioral categories:
+
+- **Task lifecycle** — `mark_complete()` sets the flag, spawns a next occurrence for daily/weekly tasks, returns `None` for non-recurring tasks and for tasks without a pet reference, and falls back to `date.today()` when `due_date` is unset.
+- **`is_due_today()`** — the due_date field gates inclusion correctly; a task due tomorrow is excluded.
+- **Sorting** — `sort_by_time()` returns entries in chronological order regardless of insertion order.
+- **Conflict detection** — overlapping intervals produce a warning; back-to-back tasks (end == start) do not; an empty schedule returns no warnings.
+- **`explain()` content** — the rationale text mentions priority and duration, counts anchored vs. unanchored tasks correctly, names bumped tasks with their original requested times, names dropped tasks, and says "All tasks fit" when nothing is dropped.
+- **Owner day window** — defaults are 07:00–21:00; unanchored tasks start at `day_start`; tasks that don't fit the window are dropped.
+- **`filter_tasks()`** — filters by pet name, by completed status, and by both combined; non-matching filters return empty lists.
+- **Back-reference healing** — a task appended to `pet.tasks` without `add_task()` has its `pet` reference restored during `generate()` rather than raising.
+- **`remove_task()`** — removes the task from the list and clears `task.pet`.
+
+These tests matter because the scheduling logic has several interacting phases (anchor → clash resolution → gap fill → drop), and a bug in any one phase can silently corrupt the plan rather than raising an exception. The tests pin each phase's output so regressions are caught immediately.
 
 **b. Confidence**
 
-- How confident are you that your scheduler works correctly?
-- What edge cases would you test next if you had more time?
+I'm confident the core happy path and the most common edge cases work correctly — the test suite is specific enough that a regression in placement or conflict detection would fail a named test. The area I'm least confident about is cascading clash resolution: if multiple anchored tasks clash with each other in sequence, the order in which they're bumped and re-queued could affect the final plan in ways that aren't fully covered by the existing tests. If I had more time I would test:
+
+- Three or more tasks all requesting the same preferred time, checking that priority order is respected through the chain.
+- A task whose `preferred_time` is valid but whose duration pushes it past `day_end`, to confirm it's bumped rather than placed partially out of bounds.
+- The interaction between a recurring task completing on the last slot of the day and the next occurrence being added while `generate()` is mid-run.
 
 ---
 
@@ -81,12 +107,16 @@ This tradeoff is reasonable for a daily pet care planner for three reasons. Firs
 
 **a. What went well**
 
-- What part of this project are you most satisfied with?
+I'm most satisfied with the `Schedule` class design. The three-phase approach — place anchored tasks first, resolve clashes by priority, then fill remaining gaps with untimed and bumped tasks — turned out to be both readable and correct. Each phase has a single responsibility, the methods are short, and the flow through `generate()` is easy to follow. The decision to do a design review on the skeleton before writing any logic was the reason that came out cleanly: fixing the `_resolve_clash()` return type and extracting `_first_free_gap()` would have been much messier mid-implementation.
 
 **b. What you would improve**
 
-- If you had another iteration, what would you improve or redesign?
+Two things stand out:
+
+1. **Weekly recurrence with an anchor date.** Right now a task with `recurrence="weekly"` but no `due_date` shows up every day because `is_due_today()` falls back to treating it like a daily task. Fixing this properly requires the model to carry an anchor date so the scheduler can compute whether this is the right day of the week. I documented it as a deliberate limitation rather than shipping a half-working feature, but it's the most obviously missing piece.
+
+2. **Gap spacing between tasks.** The current scheduler packs tasks back-to-back with no breathing room. In practice a pet walk followed immediately by a medication task with no transition time isn't realistic. Adding a configurable buffer between tasks would make the plan more useful, though it adds complexity to the gap-finding logic.
 
 **c. Key takeaway**
 
-- What is one important thing you learned about designing systems or working with AI on this project?
+The most valuable thing I learned is that AI collaboration works best when you treat it as a design partner on structure, not just a code generator. Asking the AI to review the skeleton for design issues before writing any logic produced changes that would have been expensive to retrofit later. But it only works if you push back on suggestions that add complexity without proportional benefit — keeping the design simple is still your job, not the AI's.

@@ -156,6 +156,30 @@ tests/test_pawpal.py::test_remove_task_clears_pet_reference PASSED       [100%]
 
 All core behaviors are exercised — task lifecycle, recurrence, sort ordering, conflict detection, scheduling pipeline internals (day window enforcement, task drop when no gap fits, preferred-time clash resolution), `explain()` rationale content, `filter_tasks` combinations, and the pet back-reference healing fix.
 
+## ✨ Features
+
+### Scheduling Algorithm
+
+`Schedule.generate()` builds the daily plan in four phases:
+
+1. **Collect** — gathers every task due today across all pets (`_collect_tasks`). Tasks added directly to a pet without going through `add_task` have their pet back-reference healed automatically here.
+
+2. **Sort** — orders the candidate pool by **priority descending, then duration ascending** (`_sort_tasks`). Higher-priority tasks are placed first; among tasks of equal priority, shorter ones are scheduled first so more tasks fit within the day window.
+
+3. **Anchor preferred times** (`_place_anchored`) — tasks with a `preferred_time` are placed at their requested slot when possible. If a slot is already taken, `_resolve_clash` picks the winner by priority → shorter duration → insertion order; the loser is returned to a "bumped" list and treated as an unanchored task for step 4.
+
+4. **Fill gaps** (`_fill_gaps`) — unanchored and bumped tasks are inserted into the first available gap (≥ task duration) found by scanning forward from `day_start`. Tasks that cannot fit before `day_end` are moved to `Schedule.dropped`.
+
+### Supporting Capabilities
+
+| Capability | Where |
+|---|---|
+| **Conflict detection** | `Schedule.detect_conflicts()` — O(n log n + k) scan; returns one warning string per overlap |
+| **Time-sorted view** | `Schedule.sort_by_time()` — reads `entries` after `generate()`, orders by start time |
+| **Task filtering** | `Schedule.filter_tasks(completed, pet_name)` — combinable filters; returns empty list on no match |
+| **Recurring tasks** | `Task.mark_complete()` — spawns a next-occurrence `Task` (+1 day for `daily`, +7 for `weekly`) and registers it with the same pet |
+| **Scheduling rationale** | `Schedule.explain()` — prose description of prioritization, anchored vs gap-filled counts, moved tasks with before/after times, and dropped tasks |
+
 ## 📐 Smarter Scheduling
 
 | Feature | Method(s) | Description |
@@ -177,12 +201,74 @@ Conflict Detection:
 
 ## 📸 Demo Walkthrough
 
-Describe your app in numbered steps so a reader can follow along without watching a video:
+### UI Features at a Glance
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+| Section | What a user can do |
+|---|---|
+| **Owner** | Set owner name and the day's start/end times (default 07:00–21:00) |
+| **Pets** | Add pets (name, species, breed); view a summary table of all pets and their task counts |
+| **Tasks** | Add tasks per pet (title, duration, priority, category, recurrence, optional preferred time); remove any task from the list |
+| **Schedule** | Click **Generate schedule** to build the day's plan; re-generate at any time |
+| **Schedule table** | Sorted by start time; check a task done to strike it through and update metrics immediately |
+| **Category filter** | Narrow the table to walk / feeding / meds / grooming |
+| **Conflict warnings** | Yellow banners appear above the table whenever two tasks overlap |
+| **Rescheduled tasks** | Expandable section listing tasks that had a preferred time but were moved by the scheduler |
+| **Dropped tasks** | Bordered warning block listing tasks that couldn't fit before day-end |
+| **Why this plan?** | Expandable rationale: how tasks were prioritized, which kept their preferred time, which were moved and why, which were dropped |
 
-**Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
+### Example Workflow
+
+1. **Set owner info** — change the owner name to your own and adjust the day window if needed.
+2. **Add pets** — enter a pet name (e.g., *Biscuit*), pick *dog* as the species, and click **Add pet**. Repeat for a second pet (*Mochi*, cat).
+3. **Add tasks** — for Biscuit, add a *Morning walk* (30 min, high priority, preferred time 08:00) and *Flea meds* (5 min, high priority, no preferred time). For Mochi, add *Morning feeding* (5 min, high priority, preferred time 07:30) and *Playtime* (20 min, low priority).
+4. **Generate schedule** — click **Generate schedule**. The scheduler anchors Morning feeding at 07:30 and Morning walk at 08:00, places Flea meds in the first free gap (07:00), and fills Playtime into the next open slot.
+5. **Review metrics** — the summary row shows tasks scheduled, completed count, total time, and % of the day used.
+6. **Mark tasks done** — check the checkbox next to *Morning walk*; the row strikes through and the completed count updates immediately.
+7. **Filter by category** — select *walk* in the category dropdown to see only walk tasks.
+8. **Inspect the rationale** — open **Why this plan?** to read exactly how the scheduler prioritized and placed each task.
+
+### Key Scheduler Behaviors Shown
+
+- **Priority + duration sort**: Flea meds (priority 5, 5 min) is scheduled before Morning walk (priority 3, 30 min) even though the walk has a preferred time anchor.
+- **Preferred-time anchoring**: Morning feeding lands at 07:30 and Morning walk at 08:00 exactly as requested.
+- **Conflict warning**: If two tasks are forced to overlap (e.g., a 60-min vet visit at 10:00 and a 45-min grooming at 10:20), a yellow warning banner identifies both tasks, their pets, and start times.
+- **Gap-fill**: Unanchored tasks like Flea meds and Playtime are slotted into the earliest available opening after `day_start`.
+- **Drop on overflow**: Tasks that cannot fit before `day_end` appear in the dropped-tasks warning block and are explained in the rationale.
+
+### Sample CLI Output (`python main.py`)
+
+```
+Today's Schedule — 2026-07-03 (sorted by time)
+========================================
+  • Biscuit: Flea meds (5 min, priority 5)
+  • Mochi: Playtime (20 min, priority 2)
+  • Mochi: Morning feeding (5 min, priority 4) @ 07:30
+  • Biscuit: Morning walk (30 min, priority 3) @ 08:00
+  • Biscuit: Breakfast (10 min, priority 4) @ 08:30
+  • Biscuit: Evening walk (30 min, priority 3) @ 18:00
+  • Mochi: Evening feeding (5 min, priority 4) @ 18:00
+
+Biscuit's tasks only:
+----------------------------------------
+  • Biscuit: Breakfast (10 min, priority 4) @ 08:30
+  • Biscuit: Morning walk (30 min, priority 3) @ 08:00
+  • Biscuit: Flea meds (5 min, priority 5)
+  • Biscuit: Evening walk (30 min, priority 3) @ 18:00
+
+Completed tasks:
+----------------------------------------
+  ✓ Biscuit: Breakfast (10 min, priority 4) @ 08:30
+
+Remaining tasks:
+----------------------------------------
+  • Mochi: Evening feeding (5 min, priority 4) @ 18:00
+  • Mochi: Morning feeding (5 min, priority 4) @ 07:30
+  • Biscuit: Morning walk (30 min, priority 3) @ 08:00
+  • Biscuit: Flea meds (5 min, priority 5)
+  • Biscuit: Evening walk (30 min, priority 3) @ 18:00
+  • Mochi: Playtime (20 min, priority 2)
+
+Conflict Detection:
+----------------------------------------
+  WARNING: Conflict (different pets) — 'Vet checkup' for Biscuit @ 10:00 overlaps 'Grooming session' for Mochi @ 10:20
+```

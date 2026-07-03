@@ -1,0 +1,68 @@
+classDiagram
+    %% PawPal+ : one Owner -> many Pets -> many Tasks; Schedule builds a daily plan
+    %% Times are stored as minutes-since-midnight (ints); formatted to HH:MM only for display.
+
+    class Owner {
+        +str name
+        +int day_start
+        +int day_end
+        +dict preferences
+        +list~Pet~ pets
+        +add_pet(pet) None
+        +all_tasks() list~Task~
+        +total_task_load() int
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +str breed
+        +int age
+        +str special_needs
+        +list~Task~ tasks
+        +add_task(task) None
+        +remove_task(task) None
+        +tasks_by_priority() list~Task~
+    }
+
+    class Task {
+        +str name
+        +int duration
+        +int priority
+        +Optional~str~ category
+        +Optional~int~ preferred_time
+        +Optional~str~ recurrence
+        +Optional~date~ due_date
+        +Optional~Pet~ pet
+        +bool completed
+        +mark_complete() Optional~Task~
+        +summary() str
+        +is_due_today(day) bool
+    }
+
+    class Schedule {
+        +Owner owner
+        +date date
+        +list~tuple~ entries
+        +list~Task~ dropped
+        +generate() None
+        +sort_by_time() list~Task~
+        +filter_tasks(completed, pet_name) list~Task~
+        +explain() str
+        +detect_conflicts() list~str~
+        +__str__() str
+        -_collect_tasks() list~Task~
+        -_sort_tasks(tasks) list~Task~
+        -_first_free_gap(duration, after) Optional~int~
+        -_place_anchored(tasks) list~Task~
+        -_resolve_clash(a, b) tuple~Task_Task~
+        -_fill_gaps(tasks) None
+    }
+
+    Owner "1" *-- "*" Pet : owns
+    Pet "1" *-- "*" Task : has
+    Task "*" ..> "0..1" Pet : back-ref (pet)
+    Task ..> Task : mark_complete() spawns next
+    Schedule "1" --> "1" Owner : plans for
+    Schedule "1" --> "*" Pet : references via entries
+    Schedule "1" --> "*" Task : schedules / drops
